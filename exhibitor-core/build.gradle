@@ -27,6 +27,8 @@ dependencies {
     compile "com.sun.jersey:jersey-server:${jerseyVersion}"
     compile "com.sun.jersey:jersey-json:${jerseyVersion}"
 
+    compile "com.microsoft.azure:azure-storage:${azureSDKVersion}"
+
     testCompile "org.apache.curator:curator-test:${curatorVersion}"
     testCompile "org.mockito:mockito-core:${mockitoVersion}"
 }

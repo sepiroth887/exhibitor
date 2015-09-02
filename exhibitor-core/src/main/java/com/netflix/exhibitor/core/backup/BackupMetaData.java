@@ -18,8 +18,15 @@ package com.netflix.exhibitor.core.backup;
 
 public class BackupMetaData
 {
-    private final String    name;
-    private final long      modifiedDate;
+
+    private String    name;
+    private long      modifiedDate;
+
+    @SuppressWarnings("unused")
+    /**
+     * Required to make jackson serializer happy
+     */
+    public BackupMetaData(){}
 
     public BackupMetaData(String name, long modifiedDate)
     {

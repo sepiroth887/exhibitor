@@ -71,6 +71,10 @@ public class ExhibitorCLI
     public static final String S3_CONFIG = "s3config";
     public static final String S3_CONFIG_PREFIX = "s3configprefix";
     public static final String S3_REGION = "s3region";
+    public static final String AZURE_ACCOUNT_NAME = "azureaccountname";
+    public static final String AZURE_ACCOUNT_KEY = "azureaccountkey";
+    public static final String AZURE_CONFIG_CONTAINER = "azureconfigcontainer";
+    public static final String AZURE_BLOB_BACKUP = "azurebackup";
     public static final String ZOOKEEPER_CONFIG_INITIAL_CONNECT_STRING = "zkconfigconnect";
     public static final String ZOOKEEPER_CONFIG_EXHIBITOR_PORT = "zkconfigexhibitorport";
     public static final String ZOOKEEPER_CONFIG_EXHIBITOR_URI_PATH = "zkconfigexhibitorpath";
@@ -152,11 +156,17 @@ public class ExhibitorCLI
         Options backupOptions = new Options();
         backupOptions.addOption(null, S3_BACKUP, true, "If true, enables AWS S3 backup of ZooKeeper log files (s3credentials may be provided as well).");
         backupOptions.addOption(null, FILESYSTEMBACKUP, true, "If true, enables file system backup of ZooKeeper log files.");
+        backupOptions.addOption(null, AZURE_BLOB_BACKUP, true,"If true enables Azure Blob Storage backup of Zookeeper logfiles");
 
         Options s3Options = new Options();
         s3Options.addOption(null, S3_CREDENTIALS, true, "Optional credentials to use for s3backup or s3config. Argument is the path to an AWS credential properties file with two properties: " + PropertyBasedS3Credential.PROPERTY_S3_KEY_ID + " and " + PropertyBasedS3Credential.PROPERTY_S3_SECRET_KEY);
         s3Options.addOption(null, S3_REGION, true, "Optional region for S3 calls (e.g. \"eu-west-1\"). Will be used to set the S3 client's endpoint.");
         s3Options.addOption(null, S3_PROXY, true, "Optional configuration used when when connecting to S3 via a proxy. Argument is the path to an AWS credential properties file with four properties (only host, port and protocol are required if using a proxy): " + PropertyBasedS3ClientConfig.PROPERTY_S3_PROXY_HOST + ", " + PropertyBasedS3ClientConfig.PROPERTY_S3_PROXY_PORT + ", " + PropertyBasedS3ClientConfig.PROPERTY_S3_PROXY_USERNAME + ", " + PropertyBasedS3ClientConfig.PROPERTY_S3_PROXY_PASSWORD);
+
+        Options azureOptions = new Options();
+        azureOptions.addOption(null, AZURE_ACCOUNT_NAME, true, "Azure account name");
+        azureOptions.addOption(null, AZURE_ACCOUNT_KEY, true, "Azure account key");
+        azureOptions.addOption(null, AZURE_CONFIG_CONTAINER, true, "Azure config container");
 
         generalOptions = new Options();
         generalOptions.addOption(null, TIMEOUT, true, "Connection timeout (ms) for ZK connections. Default is 30000.");
@@ -180,6 +190,7 @@ public class ExhibitorCLI
 
         options = new Options();
         addAll("S3 Options", s3Options);
+        addAll("Azure Options", azureOptions);
         addAll("Configuration Options for Type \"s3\"", s3ConfigOptions);
         addAll("Configuration Options for Type \"zookeeper\"", zookeeperConfigOptions);
         addAll("Configuration Options for Type \"file\"", fileConfigOptions);
