@@ -27,6 +27,7 @@ dependencies {
     compile "com.sun.jersey:jersey-server:${jerseyVersion}"
     compile "com.sun.jersey:jersey-json:${jerseyVersion}"
 
+    compile "org.apache.commons:commons-compress:1.10"
     compile "com.microsoft.azure:azure-storage:${azureSDKVersion}"
 
     testCompile "org.apache.curator:curator-test:${curatorVersion}"

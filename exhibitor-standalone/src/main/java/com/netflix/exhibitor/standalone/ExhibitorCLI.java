@@ -75,6 +75,13 @@ public class ExhibitorCLI
     public static final String AZURE_ACCOUNT_KEY = "azureaccountkey";
     public static final String AZURE_CONFIG_CONTAINER = "azureconfigcontainer";
     public static final String AZURE_BLOB_BACKUP = "azurebackup";
+    public static final String AZURE_FULL_BACKUP = "fullbackup";
+    public static final String AZURE_RESTORE = "restore";
+    public static final String AZURE_SNAPSHOT = "snapshot";
+    public static final String AZURE_BACKUP_CONTAINER_PREFIX = "backupprefix";
+    public static final String AZURE_ZK_LOG_DIR = "logdir";
+    public static final String AZURE_ZK_SNAPSHOT_DIR = "snapshotdir";
+
     public static final String ZOOKEEPER_CONFIG_INITIAL_CONNECT_STRING = "zkconfigconnect";
     public static final String ZOOKEEPER_CONFIG_EXHIBITOR_PORT = "zkconfigexhibitorport";
     public static final String ZOOKEEPER_CONFIG_EXHIBITOR_URI_PATH = "zkconfigexhibitorpath";
@@ -167,6 +174,13 @@ public class ExhibitorCLI
         azureOptions.addOption(null, AZURE_ACCOUNT_NAME, true, "Azure account name");
         azureOptions.addOption(null, AZURE_ACCOUNT_KEY, true, "Azure account key");
         azureOptions.addOption(null, AZURE_CONFIG_CONTAINER, true, "Azure config container");
+        azureOptions.addOption(null, AZURE_FULL_BACKUP, false, "Flag to activate full backups periodically");
+        azureOptions.addOption(null, AZURE_SNAPSHOT, true, "Backup version to recover (timestamp section of the container name in Azure. E.g.: full-test-12394 can be recovered with --snapshot 12394)");
+        azureOptions.addOption(null, AZURE_BACKUP_CONTAINER_PREFIX, true, "Prefix for backup containers");
+        azureOptions.addOption(null, AZURE_ZK_LOG_DIR, true, "Zookeeper log dir (including ./version-2)");
+        azureOptions.addOption(null, AZURE_ZK_SNAPSHOT_DIR, true, "Zookeeper snapshot dir (including ./version-2)");
+        azureOptions.addOption(null, AZURE_RESTORE, false, "Flag to trigger a full restore (use with --snapshot flag to specify a backup (timestamped))");
+
 
         generalOptions = new Options();
         generalOptions.addOption(null, TIMEOUT, true, "Connection timeout (ms) for ZK connections. Default is 30000.");

@@ -117,7 +117,8 @@ public class ExhibitorCreator
 
         AzureClientConfig azureClientConfig = null;
         if (commandLine.hasOption(AZURE_ACCOUNT_NAME) && commandLine.hasOption(AZURE_ACCOUNT_KEY)){
-            azureClientConfig = new AzureClientConfig(commandLine.getOptionValue(AZURE_ACCOUNT_NAME), commandLine.getOptionValue(AZURE_ACCOUNT_KEY), commandLine.getOptionValue(AZURE_CONFIG_CONTAINER));
+            System.out.println("Has FullBackup: "+ commandLine.hasOption(AZURE_FULL_BACKUP));
+            azureClientConfig = new AzureClientConfig(commandLine.getOptionValue(AZURE_ACCOUNT_NAME), commandLine.getOptionValue(AZURE_ACCOUNT_KEY), commandLine.getOptionValue(AZURE_CONFIG_CONTAINER), commandLine.hasOption(AZURE_FULL_BACKUP));
         }
 
         BackupProvider backupProvider = null;
@@ -130,6 +131,17 @@ public class ExhibitorCreator
             backupProvider = new FileSystemBackupProvider();
         }else if ("true".equalsIgnoreCase(commandLine.getOptionValue(AZURE_BLOB_BACKUP))){
             backupProvider = new AzureBlobBackupProvider(azureClientConfig);
+
+            if(commandLine.hasOption(AZURE_RESTORE)){
+                System.out.println("RESTORE REQUESTED!");
+                String snapshot = "";
+                if(commandLine.hasOption(AZURE_SNAPSHOT)){
+                    snapshot = commandLine.getOptionValue(AZURE_SNAPSHOT);
+                }else{
+                    snapshot = ((AzureBlobBackupProvider)backupProvider).findLatestSnapshot(commandLine.getOptionValue(AZURE_BACKUP_CONTAINER_PREFIX));
+                }
+                ((AzureBlobBackupProvider)backupProvider).restoreAndExit(snapshot, commandLine.getOptionValue(AZURE_BACKUP_CONTAINER_PREFIX),commandLine.getOptionValue(AZURE_ZK_LOG_DIR),commandLine.getOptionValue(AZURE_ZK_SNAPSHOT_DIR));
+            }
         }
 
         int timeoutMs = Integer.parseInt(commandLine.getOptionValue(TIMEOUT, "30000"));
