@@ -24,6 +24,8 @@ import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream;
 import org.apache.commons.compress.utils.IOUtils;
+import org.joda.time.Duration;
+import org.slf4j.Logger;
 
 import java.io.*;
 import java.net.URISyntaxException;
@@ -40,9 +42,10 @@ import static com.google.common.base.Strings.isNullOrEmpty;
 
 public class AzureBlobBackupProvider implements BackupProvider {
 
-    private static final BackupConfigSpec CONFIG_CONTAINER = new BackupConfigSpec("container", "Container", "Azure Storage container name (created if not present)", "", BackupConfigSpec.Type.STRING);
+    private static final BackupConfigSpec BACKUP_CONTAINER = new BackupConfigSpec("container", "Container", "Azure Storage container name (created if not present)", "", BackupConfigSpec.Type.STRING);
     private static final BackupConfigSpec FULL_BACKUP_FACTOR = new BackupConfigSpec("backup_factor", "Full Backup Factor", "Factor multiplied by Backup frequency to determine full backup trigger", "", BackupConfigSpec.Type.STRING);
-    private static final List<BackupConfigSpec> CONFIGS = Lists.newArrayList(CONFIG_CONTAINER, FULL_BACKUP_FACTOR);
+    private static final BackupConfigSpec FULL_BACKUP_RETENTION = new BackupConfigSpec("backup_retention", "Full Backup Retention", "Retention duration of full backups in ISO8601 Seconds notation(e.g. 7 days 3 hour 4min : PT615840S)", "PT604800S", BackupConfigSpec.Type.STRING);
+    private static final List<BackupConfigSpec> CONFIGS = Lists.newArrayList(BACKUP_CONTAINER, FULL_BACKUP_FACTOR, FULL_BACKUP_RETENTION);
 
     private static final String FULL_BACKUP_PREFIX = "full-%s-%d";
     private CloudBlobClient blobClient;
@@ -78,8 +81,20 @@ public class AzureBlobBackupProvider implements BackupProvider {
 
     @Override
     public boolean isValidConfig(Exhibitor exhibitor, Map<String, String> configValues) {
-        return configValues.containsKey(CONFIG_CONTAINER.getKey()) && !isNullOrEmpty(configValues.get(CONFIG_CONTAINER.getKey()))
-                && configValues.containsKey(FULL_BACKUP_FACTOR.getKey()) && verifyBackupFactor(configValues.get(FULL_BACKUP_FACTOR.getKey()));
+        return configValues.containsKey(BACKUP_CONTAINER.getKey()) && !isNullOrEmpty(configValues.get(BACKUP_CONTAINER.getKey()))
+                && configValues.containsKey(FULL_BACKUP_FACTOR.getKey()) && verifyBackupFactor(configValues.get(FULL_BACKUP_FACTOR.getKey())) && verifyRetentionConfig(configValues);
+    }
+
+    private boolean verifyRetentionConfig(Map<String, String> configValues) {
+        if (configValues.containsKey(FULL_BACKUP_RETENTION.getKey())) {
+            try {
+                Duration.parse(configValues.get(FULL_BACKUP_RETENTION.getKey()));
+            } catch (Exception ex) {
+                // Invalid duration
+                return false;
+            }
+        }
+        return true;
     }
 
     private boolean verifyBackupFactor(String duration) {
@@ -91,6 +106,24 @@ public class AzureBlobBackupProvider implements BackupProvider {
         }
     }
 
+    private void handleRetention(Duration retention, String backupContainerPrefix, ActivityLog log) {
+        String backupPrefix = String.format("full-%s", backupContainerPrefix);
+        Duration timestamp;
+        Duration now = Duration.millis(System.currentTimeMillis());
+        for (CloudBlobContainer containerRef : blobClient.listContainers(backupPrefix)) {
+            try {
+                timestamp = Duration.millis(Long.parseLong(containerRef.getName().replace(backupPrefix + "-", "")));
+                if (now.minus(timestamp).isLongerThan(retention)){
+                    log.add(ActivityLog.Type.INFO, "Found expired backup: "+ timestamp.toString());
+                    containerRef.deleteIfExists();
+                }
+
+            } catch (Exception ex) {
+                log.add(ActivityLog.Type.ERROR, "Failed to parse timestamp during retention check.", ex);
+            }
+        }
+    }
+
     @Override
     public UploadResult uploadBackup(Exhibitor exhibitor, BackupMetaData metaData, File source, Map<String, String> configValues) throws Exception {
         List<BackupMetaData> availableBackups = getAvailableBackups(exhibitor, configValues);
@@ -99,7 +132,7 @@ public class AzureBlobBackupProvider implements BackupProvider {
             return UploadResult.DUPLICATE;
         }
 
-        CloudBlobContainer container = getContainer(configValues, exhibitor);
+        CloudBlobContainer container = getContainer(configValues, exhibitor.getLog());
         UploadResult result = UploadResult.FAILED;
         try {
             exhibitor.getLog().add(ActivityLog.Type.INFO, String.format("Attempting backup upload for: %s-%s from file: %s", metaData.getName(), metaData.getModifiedDate(), source.getAbsolutePath()));
@@ -126,6 +159,9 @@ public class AzureBlobBackupProvider implements BackupProvider {
             uploadMetadata(availableBackups, container.getBlockBlobReference("metadata"), exhibitor.getLog());
 
             triggerFullBackup(exhibitor, configValues);
+            String retentionStr = configValues.containsKey(FULL_BACKUP_RETENTION.getKey()) ?
+                    configValues.get(FULL_BACKUP_RETENTION.getKey()) : FULL_BACKUP_RETENTION.getDefaultValue();
+            handleRetention(Duration.parse(retentionStr), configValues.get(BACKUP_CONTAINER.getKey()), exhibitor.getLog());
 
             result = UploadResult.SUCCEEDED;
         } catch (Exception ex) {
@@ -153,7 +189,7 @@ public class AzureBlobBackupProvider implements BackupProvider {
                     try {
                         String snapshotDir = exhibitor.getConfigManager().getConfig().getString(StringConfigs.ZOOKEEPER_DATA_DIRECTORY);
                         String logDir = exhibitor.getConfigManager().getConfig().getString(StringConfigs.ZOOKEEPER_LOG_DIRECTORY);
-                        String containerName = String.format(FULL_BACKUP_PREFIX, configValues.get(CONFIG_CONTAINER.getKey()), current);
+                        String containerName = String.format(FULL_BACKUP_PREFIX, configValues.get(BACKUP_CONTAINER.getKey()), current);
 
                         CloudBlobContainer container = blobClient.getContainerReference(containerName);
                         container.createIfNotExists();
@@ -197,18 +233,20 @@ public class AzureBlobBackupProvider implements BackupProvider {
         outputStream.finish();
         outputStream.close();
 
-        if(!hasFiles){
+        if (!hasFiles) {
             log.add(ActivityLog.Type.INFO, "Archive has no files, skipping upload");
-            new File(archiveFile).delete();
+            if (!new File(archiveFile).delete()) {
+                log.add(ActivityLog.Type.ERROR, "Failed to delete tmp archive file: " + archiveFile);
+            }
             return;
         }
 
         log.add(ActivityLog.Type.INFO, "Compressed dir " + dir + ". Starting upload");
         blob.uploadFromFile(archiveFile);
         log.add(ActivityLog.Type.INFO, "Upload completed");
-//        if (!new File(archiveFile).delete()){
-//            log.add(ActivityLog.Type.ERROR, "Failed to remove temp backup file");
-//        }
+        if (!new File(archiveFile).delete()) {
+            log.add(ActivityLog.Type.ERROR, "Failed to remove temp backup file");
+        }
     }
 
 
@@ -228,7 +266,7 @@ public class AzureBlobBackupProvider implements BackupProvider {
     public List<BackupMetaData> getAvailableBackups(Exhibitor exhibitor, Map<String, String> configValues) throws Exception {
         List<BackupMetaData> returnData = Lists.newArrayList();
         try {
-            CloudBlobContainer containerRef = getContainer(configValues, exhibitor);
+            CloudBlobContainer containerRef = getContainer(configValues, exhibitor.getLog());
             CloudBlockBlob metaData = containerRef.getBlockBlobReference("metadata");
             if (!metaData.exists()) {
                 exhibitor.getLog().add(ActivityLog.Type.INFO, "No metadata exists yet.");
@@ -245,26 +283,26 @@ public class AzureBlobBackupProvider implements BackupProvider {
 
     }
 
-    private CloudBlobContainer getContainer(Map<String, String> configValues, Exhibitor exhibitor) {
+    private CloudBlobContainer getContainer(Map<String, String> configValues, ActivityLog log) {
         try {
-            String container = configValues.get(CONFIG_CONTAINER.getKey());
-            exhibitor.getLog().add(ActivityLog.Type.INFO, "Attempting to find container: " + container);
+            String container = configValues.get(BACKUP_CONTAINER.getKey());
+            log.add(ActivityLog.Type.INFO, "Attempting to find container: " + container);
             CloudBlobContainer containerRef = blobClient.getContainerReference(container);
 
             containerRef.createIfNotExists();
 
             return containerRef;
         } catch (URISyntaxException e) {
-            exhibitor.getLog().add(ActivityLog.Type.ERROR, "Invalid URI Syntax", e);
+            log.add(ActivityLog.Type.ERROR, "Invalid URI Syntax", e);
         } catch (StorageException e) {
-            exhibitor.getLog().add(ActivityLog.Type.ERROR, "Azure Storage Failure", e);
+            log.add(ActivityLog.Type.ERROR, "Azure Storage Failure", e);
         }
         throw new IllegalStateException("Failed to fetch container");
     }
 
     @Override
     public BackupStream getBackupStream(final Exhibitor exhibitor, final BackupMetaData metaData, Map<String, String> configValues) throws Exception {
-        final CloudBlobContainer container = getContainer(configValues, exhibitor);
+        final CloudBlobContainer container = getContainer(configValues, exhibitor.getLog());
 
         exhibitor.getLog().add(ActivityLog.Type.INFO, String.format("Fetching inputstream from Azure for: %s-%s", metaData.getName(), metaData.getModifiedDate()));
         final CloudBlockBlob blob = container.getBlockBlobReference(String.format("%s-%s", metaData.getName(), metaData.getModifiedDate()));
@@ -294,7 +332,7 @@ public class AzureBlobBackupProvider implements BackupProvider {
 
     @Override
     public void deleteBackup(Exhibitor exhibitor, BackupMetaData backup, Map<String, String> configValues) throws Exception {
-        CloudBlobContainer container = getContainer(configValues, exhibitor);
+        CloudBlobContainer container = getContainer(configValues, exhibitor.getLog());
 
         CloudBlockBlob blob = container.getBlockBlobReference(String.format("%s-%s", backup.getName(), backup.getModifiedDate()));
         if (blob.exists()) {
@@ -307,7 +345,7 @@ public class AzureBlobBackupProvider implements BackupProvider {
 
     @Override
     public void downloadBackup(Exhibitor exhibitor, BackupMetaData backup, OutputStream destination, Map<String, String> configValues) throws Exception {
-        CloudBlobContainer container = getContainer(configValues, exhibitor);
+        CloudBlobContainer container = getContainer(configValues, exhibitor.getLog());
 
         CloudBlockBlob blob = container.getBlockBlobReference(String.format("%s-%s", backup.getName(), backup.getModifiedDate()));
         if (blob.exists()) {
@@ -315,55 +353,56 @@ public class AzureBlobBackupProvider implements BackupProvider {
         }
     }
 
-    public String findLatestSnapshot(String containerPrefix) {
+    public String findLatestSnapshot(String containerPrefix, Logger log) {
         String fullPrefix = "full-" + containerPrefix;
 
         long latest = 0;
-        for(CloudBlobContainer container : blobClient.listContainers(fullPrefix)){
+        log.info("Retrieving existing container for prefix: " + fullPrefix);
+        for (CloudBlobContainer container : blobClient.listContainers(fullPrefix)) {
             long timestamp = Long.parseLong(container.getName().replace(fullPrefix, ""));
             if (timestamp > latest) {
                 latest = timestamp;
             }
         }
-
+        log.info("Found latest snapshot: " + latest);
         return Long.toString(latest);
     }
 
-    public void restoreAndExit(String snapshot, String containerPrefix, String logDir, String snapshotDir) throws Exception{
-        System.out.println("Starting recovery for snapshot: "+ snapshot);
+    public void restoreAndExit(String snapshot, String containerPrefix, String logDir, String snapshotDir, Logger log) throws Exception {
+        log.info("Starting recovery for snapshot: " + snapshot);
         CloudBlobContainer containerRef = blobClient.getContainerReference(String.format("full-%s-%s", containerPrefix, snapshot));
 
         CloudBlockBlob logBlob = containerRef.getBlockBlobReference("log");
         CloudBlockBlob snapshotBlob = containerRef.getBlockBlobReference("snapshot");
 
-        if(!logBlob.exists()){
-            System.out.println("No Log blob found. Exiting.");
+        if (!logBlob.exists()) {
+            log.error("No Log blob found. Exiting.");
             System.exit(1);
         }
 
-        if(snapshotBlob.exists()){
-            extractToDir(snapshotDir, snapshotBlob);
+        if (snapshotBlob.exists()) {
+            extractToDir(snapshotDir, snapshotBlob, log);
         }
 
-        extractToDir(logDir, logBlob);
-        System.out.println("Recovery done. Exiting");
+        extractToDir(logDir, logBlob, log);
+        log.info("Recovery done. Exiting");
         System.exit(0);
     }
 
-    private void extractToDir(String snapshotDir, CloudBlockBlob snapshotBlob) throws Exception {
+    private void extractToDir(String snapshotDir, CloudBlockBlob snapshotBlob, Logger log) throws Exception {
         String tarFile = String.format("/tmp/%s", snapshotBlob.getName());
-        System.out.println("Downloading "+snapshotBlob.getName());
+        log.info("Downloading " + snapshotBlob.getName());
         snapshotBlob.downloadToFile(tarFile);
-        System.out.println("Downloading completed. Extracting to "+snapshotDir);
+        log.info("Downloading completed. Extracting to " + snapshotDir);
 
         TarArchiveInputStream tarStream = (TarArchiveInputStream) new ArchiveStreamFactory()
-                .createArchiveInputStream("tar",new FileInputStream(tarFile));
+                .createArchiveInputStream("tar", new FileInputStream(tarFile));
 
         ArchiveEntry entry;
-        while((entry = tarStream.getNextTarEntry()) != null){
+        while ((entry = tarStream.getNextTarEntry()) != null) {
             OutputStream outstream = new FileOutputStream(String.format("%s/%s", snapshotDir, entry.getName()));
 
-            if(entry.isDirectory()){
+            if (entry.isDirectory()) {
                 continue;
             }
 
@@ -372,8 +411,10 @@ public class AzureBlobBackupProvider implements BackupProvider {
             outstream.close();
         }
 
-        System.out.println("Extracted.");
+        log.info("Finished extracting " + tarFile);
         tarStream.close();
-//        new File(tarFile).delete();
+        if (!new File(tarFile).delete()) {
+            log.warn("Failed to delete temporary archive: " + tarFile);
+        }
     }
 }
